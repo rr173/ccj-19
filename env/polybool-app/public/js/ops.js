@@ -51,12 +51,16 @@ function toPcGeom(geom) {
  * @param op   'union' | 'difference' | 'intersection'
  * @param geomA, geomB  规范化的 MultiPolygon（不会被修改）
  * @param eps  容差
+ * @param opts.recompute  派生图形自动重算模式：来源变化后"结果等于 A（无面积增减）"是
+ *        合法的重算结论（返回该几何），但"交集为空 / 引擎无输出 / 拓扑无效"仍判失败，
+ *        以便整轮原子回滚。创建模式（默认）维持严格拒绝、不产生派生图形。
  * @returns {ok, geom?, reason?, report} report 含完整判定链，供历史与 UI 展示
  */
-export function applyBoolean(pc, op, geomA, geomB, eps) {
+export function applyBoolean(pc, op, geomA, geomB, eps, opts = {}) {
+  const recompute = !!opts.recompute;
   const opInfo = OPS[op];
   const report = {
-    op, opLabel: opInfo.label, symbol: opInfo.symbol, eps,
+    op, opLabel: opInfo.label, symbol: opInfo.symbol, eps, recompute,
     decisions: [], input: null, touch: null, output: null, validation: null,
   };
   const fail = reason => ({ ok: false, reason, report });
@@ -89,20 +93,28 @@ export function applyBoolean(pc, op, geomA, geomB, eps) {
   report.touch = touch;
   report.decisions.push(`接触判定：${touch.description}`);
 
-  // 4. 按接触类型提前给出确定结论（与库行为一致，但先说明规则）
+  // 4. 按接触类型提前给出确定结论（与库行为一致，但先说明规则）。
+  //    重算模式下，差集"无面积变化"是合法结论（几何 = A）；相交为空在两种模式下都是失败
+  //    （派生结果不复存在，触发整轮回滚并标出本节点）。
   if (op === 'intersection' && (touch.kind === 'disjoint' || touch.kind === 'point-touch' || touch.kind === 'edge-touch')) {
     const why = touch.kind === 'disjoint'
       ? `两形状分离（最近距离 ${f2(touch.minDist)}），交集为空`
       : touch.kind === 'point-touch'
         ? '两形状仅点接触，交集面积为零，按规则视为空'
         : '两形状仅共享边界，交集面积为零，按规则视为空';
-    return fail(`相交结果为空：${why}。已保留原图`);
+    return fail(`相交结果为空：${why}。`);
   }
-  if (op === 'difference' && touch.kind === 'disjoint') {
-    return fail(`差集无变化：B 与 A 分离（最近距离 ${f2(touch.minDist)}），A − B = A。已保留原图`);
-  }
-  if (op === 'difference' && (touch.kind === 'point-touch' || touch.kind === 'edge-touch')) {
-    return fail(`差集无变化：B 仅与 A 边界接触（${touch.kind === 'point-touch' ? '点接触' : '共边'}），不减去任何面积。已保留原图`);
+  if (op === 'difference' && (touch.kind === 'disjoint' || touch.kind === 'point-touch' || touch.kind === 'edge-touch')) {
+    const why = touch.kind === 'disjoint'
+      ? `B 与 A 分离（最近距离 ${f2(touch.minDist)}），A − B = A`
+      : `B 仅与 A 边界接触（${touch.kind === 'point-touch' ? '点接触' : '共边'}），不减去任何面积，A − B = A`;
+    if (!recompute) return fail(`差集无变化：${why}。已保留原图`);
+    report.decisions.push(`重算结论：${why}，结果沿用 A 的几何`);
+    const geomSame = normalizeGeom(aCopy.flatMap(p => p), eps, []);
+    const vsame = validateGeom(geomSame, eps);
+    report.output = vsame.stats;
+    report.validation = vsame;
+    return { ok: true, geom: geomSame, report };
   }
 
   // 5. 调用 polygon-clipping
@@ -113,12 +125,14 @@ export function applyBoolean(pc, op, geomA, geomB, eps) {
     return fail(`布尔引擎内部错误：${err.message}。已保留原图`);
   }
   if (!raw || raw.length === 0) {
+    if (recompute) return fail(`${opInfo.label}结果为空（${touch.description}）。`);
     return fail(`${opInfo.label}结果为空（${touch.description}）。已保留原图`);
   }
 
   // 6. 后置规范化（pinch 拆分 / 退化环丢弃 / 洞分类，全部记入判定日志）
   const geom = normalizeGeom(raw.flatMap(p => p), eps, report.decisions);
   if (!geom.length) {
+    if (recompute) return fail(`${opInfo.label}结果经规范化后为空（仅余退化环，按规则不生成细缝）。`);
     return fail(`${opInfo.label}结果经规范化后为空（仅余退化环，按规则不生成细缝）。已保留原图`);
   }
 
@@ -127,12 +141,15 @@ export function applyBoolean(pc, op, geomA, geomB, eps) {
   report.validation = vout;
   report.output = vout.stats;
   if (!vout.ok) {
+    if (recompute) return fail(`结果拓扑无效（${vout.errors[0]}）。`);
     return fail(`结果拓扑无效（${vout.errors[0]}），已放弃并保留原图`);
   }
 
-  // 8. 无变化检测：结果与规范化后的 A 全等则不产生新状态（保持历史干净）
+  // 8. 无变化检测：创建模式下结果与 A 全等则拒绝（保持历史干净）；
+  //    重算模式下这是合法结论（来源编辑导致减法不再减去面积）。
   if (geomEquals(geom, aCopy)) {
-    return fail(`${opInfo.label}结果与 A 完全全等，未产生变化。已保留原图`);
+    if (!recompute) return fail(`${opInfo.label}结果与 A 完全全等，未产生变化。已保留原图`);
+    report.decisions.push(`重算结论：结果与 A 完全全等，几何沿用不变`);
   }
 
   report.decisions.push(

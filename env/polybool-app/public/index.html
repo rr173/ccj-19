@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>多边形布尔运算编辑器</title>
+<title>多边形布尔运算 · 派生图形依赖编辑器</title>
 <link rel="stylesheet" href="/styles.css">
 <script type="importmap">
 {
@@ -17,7 +17,7 @@
 </head>
 <body>
 <header>
-  <h1>多边形布尔运算编辑器</h1>
+  <h1>派生图形依赖编辑器</h1>
   <span id="reload-badge" class="badge">…</span>
   <span class="spacer"></span>
   <label>容差 ε <input id="eps-input" type="number" min="0.000001" max="100" step="0.1" value="0.5"></label>
@@ -35,24 +35,28 @@
       <button id="mode-draw">绘制多边形</button>
     </div>
     <div class="group">
-      <div class="group-title">布尔操作</div>
+      <div class="group-title">布尔运算 → 派生图形</div>
       <div id="operands" class="operands">未选择形状</div>
-      <button id="op-union" disabled>合并 A ∪ B</button>
-      <button id="op-diff" disabled>减去 A − B</button>
-      <button id="op-inter" disabled>相交 A ∩ B</button>
+      <button id="op-union" disabled>保存为派生：A ∪ B</button>
+      <button id="op-diff" disabled>保存为派生：A − B</button>
+      <button id="op-inter" disabled>保存为派生：A ∩ B</button>
+      <small class="muted">运算结果不会消耗来源；来源变化时自动按依赖顺序重算。</small>
     </div>
     <div class="group">
-      <div class="group-title">编辑</div>
-      <button id="btn-delete">删除选中 (Del)</button>
+      <div class="group-title">选中图形</div>
+      <button id="btn-freeze">❄ 冻结为普通图形</button>
+      <button id="btn-unfreeze">🔥 解冻并恢复跟随</button>
+      <button id="btn-delete" class="danger">删除 (Del)</button>
     </div>
     <div class="group tips">
-      <div class="group-title">拓扑规则</div>
+      <div class="group-title">依赖规则</div>
       <ul>
-        <li>共边接触 → 视为连通（合并成单轮廓）</li>
-        <li>点接触 → 视为不连通（保持独立轮廓）</li>
-        <li>距离 &lt; ε 的顶点 → 吸附合并，不造细缝</li>
-        <li>自交 / 洞在轮廓外 / 重复边 → 拒绝并保留原图</li>
-        <li>结果为空或无变化 → 不写入历史</li>
+        <li>依赖边按稳定 id 连接，禁止直接/间接循环</li>
+        <li>一个来源可被多条分支同时引用</li>
+        <li>同轮每个节点只算一次，顺序与哈希确定</li>
+        <li>任一下游失败 → 整轮回滚，保留旧图与旧几何</li>
+        <li>冻结 = 新的依赖边界，上游变化不再传入</li>
+        <li>删除被引用图形时需选择取消 / 级联 / 冻结直连</li>
       </ul>
     </div>
   </aside>
@@ -61,16 +65,28 @@
     <canvas id="canvas"></canvas>
     <div id="hint"></div>
     <div id="toast" class="toast"></div>
+    <div id="modal-backdrop" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-title" id="modal-title">删除被引用的图形</div>
+        <div id="modal-body" class="modal-body"></div>
+        <div class="modal-actions">
+          <button id="modal-cancel-delete">取消删除</button>
+          <button id="modal-freeze-direct">冻结直接结果后删除</button>
+          <button id="modal-cascade" class="danger">级联删除全部后代</button>
+        </div>
+      </div>
+    </div>
   </section>
 
   <aside id="panels">
-    <div class="panel">
-      <div class="panel-title">校验摘要</div>
-      <div id="validation-panel"></div>
+    <div class="panel" id="shapes-panel">
+      <div class="panel-title">图形与依赖（点击选中；虚线=派生，❄=冻结）</div>
+      <div id="shapes-list"></div>
+      <div id="shape-detail"></div>
     </div>
-    <div class="panel">
-      <div class="panel-title">拓扑判定日志</div>
-      <div id="decisions-panel"></div>
+    <div class="panel" id="rounds-panel">
+      <div class="panel-title">本次重算日志（最近在上）</div>
+      <div id="rounds-list"></div>
     </div>
     <div class="panel grow">
       <div class="panel-title">历史（点击任意条目跳转到该状态）</div>

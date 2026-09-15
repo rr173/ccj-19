@@ -1,7 +1,7 @@
 {
   "name": "polybool-app",
   "version": "1.0.0",
-  "description": "多边形布尔运算编辑器：合并 / 减去 / 相交，显式拓扑判定、可检查历史与撤销重做",
+  "description": "多边形布尔运算派生图形依赖编辑器：DAG 依赖、原子重算、冻结边界、删除策略、可撤销历史",
   "type": "module",
   "scripts": {
     "start": "node server.js",
