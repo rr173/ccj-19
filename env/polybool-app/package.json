@@ -1,0 +1,14 @@
+{
+  "name": "polybool-app",
+  "version": "1.0.0",
+  "description": "多边形布尔运算编辑器：合并 / 减去 / 相交，显式拓扑判定、可检查历史与撤销重做",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/run-tests.js"
+  },
+  "dependencies": {
+    "polygon-clipping": "0.15.7"
+  },
+  "license": "MIT"
+}

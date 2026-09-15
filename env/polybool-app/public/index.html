@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>多边形布尔运算编辑器</title>
+<link rel="stylesheet" href="/styles.css">
+<script type="importmap">
+{
+  "imports": {
+    "polygon-clipping": "/vendor/polygon-clipping.esm.js",
+    "splaytree": "/vendor/splaytree.js",
+    "robust-predicates": "/vendor/robust-predicates/index.js"
+  }
+}
+</script>
+</head>
+<body>
+<header>
+  <h1>多边形布尔运算编辑器</h1>
+  <span id="reload-badge" class="badge">…</span>
+  <span class="spacer"></span>
+  <label>容差 ε <input id="eps-input" type="number" min="0.000001" max="100" step="0.1" value="0.5"></label>
+  <button id="btn-undo" title="Ctrl+Z">↩ 撤销</button>
+  <button id="btn-redo" title="Ctrl+Shift+Z / Ctrl+Y">↪ 重做</button>
+  <button id="btn-fit">适应视图</button>
+  <button id="btn-reset" class="danger">清空</button>
+</header>
+
+<main>
+  <aside id="toolbar">
+    <div class="group">
+      <div class="group-title">模式</div>
+      <button id="mode-select" class="active">选择 / 变换</button>
+      <button id="mode-draw">绘制多边形</button>
+    </div>
+    <div class="group">
+      <div class="group-title">布尔操作</div>
+      <div id="operands" class="operands">未选择形状</div>
+      <button id="op-union" disabled>合并 A ∪ B</button>
+      <button id="op-diff" disabled>减去 A − B</button>
+      <button id="op-inter" disabled>相交 A ∩ B</button>
+    </div>
+    <div class="group">
+      <div class="group-title">编辑</div>
+      <button id="btn-delete">删除选中 (Del)</button>
+    </div>
+    <div class="group tips">
+      <div class="group-title">拓扑规则</div>
+      <ul>
+        <li>共边接触 → 视为连通（合并成单轮廓）</li>
+        <li>点接触 → 视为不连通（保持独立轮廓）</li>
+        <li>距离 &lt; ε 的顶点 → 吸附合并，不造细缝</li>
+        <li>自交 / 洞在轮廓外 / 重复边 → 拒绝并保留原图</li>
+        <li>结果为空或无变化 → 不写入历史</li>
+      </ul>
+    </div>
+  </aside>
+
+  <section id="canvas-wrap">
+    <canvas id="canvas"></canvas>
+    <div id="hint"></div>
+    <div id="toast" class="toast"></div>
+  </section>
+
+  <aside id="panels">
+    <div class="panel">
+      <div class="panel-title">校验摘要</div>
+      <div id="validation-panel"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">拓扑判定日志</div>
+      <div id="decisions-panel"></div>
+    </div>
+    <div class="panel grow">
+      <div class="panel-title">历史（点击任意条目跳转到该状态）</div>
+      <div id="history-list"></div>
+    </div>
+  </aside>
+</main>
+
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>
