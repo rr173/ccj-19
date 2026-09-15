@@ -17,6 +17,11 @@ import {
   createHistory, pushEntry, undo, redo, jumpTo,
   serializeHistory, deserializeHistory, snapshotFromDoc, sceneHash,
 } from '../public/js/history.js';
+import {
+  ensureConstraints, previewItemsChange, solveSystem, evaluate, findConflictCore,
+  planVertexRemoval, planVertexMerge, coordsHash, constraintsDigest,
+  degToRad, radToDeg, edgeAngle, translateConstraints, scaleConstraints,
+} from '../public/js/constraints.js';
 
 const EPS = 0.5;
 let passed = 0;
@@ -484,6 +489,316 @@ suite('变换不回归', () => {
     const v = validateGeom(g, EPS);
     assert.ok(v.ok, v.errors.join('; '));
     assert.deepEqual([v.stats.outers, v.stats.holes], [1, 1]);
+  });
+});
+
+// ---------- 几何约束求解 ----------
+suite('几何约束求解器', () => {
+  // 构造单环图形节点
+  function cNode(pts) {
+    const n = { id: 'r1', name: 'R', kind: 'root', geom: [[pts.map(p => [p[0], p[1]])]] };
+    ensureConstraints(n);
+    return n;
+  }
+  function addOk(n, spec) {
+    const pv = previewItemsChange(n, EPS, { add: [spec] });
+    if (!pv.ok) throw new Error('add failed: ' + pv.reason + (pv.coreIds ? ' core=' + pv.coreIds : ''));
+    n.geom = pv.nextGeom; n.constraints = pv.nextCs;
+    return pv;
+  }
+  const E = (a, b) => ({ a, b });
+  const keys = n => n.constraints.vkeys[0][0];
+  const near = (a, b, tol = 1e-4) => Math.abs(a - b) <= tol;
+
+  test('矩形 + 水平/竖直/等长：拖动一个角，另外三个角稳定联动', () => {
+    const n = cNode([[0, 0], [100, 0], [100, 100], [0, 100]]);
+    const [a, b, c, d] = keys(n);
+    addOk(n, { kind: 'horizontal', edge: E(a, b) });
+    addOk(n, { kind: 'horizontal', edge: E(c, d) });
+    addOk(n, { kind: 'vertical', edge: E(b, c) });
+    addOk(n, { kind: 'vertical', edge: E(d, a) });
+    addOk(n, { kind: 'equal-length', edges: [E(a, b), E(b, c)] });
+    addOk(n, { kind: 'equal-length', edges: [E(b, c), E(c, d)] });
+    addOk(n, { kind: 'equal-length', edges: [E(c, d), E(d, a)] });
+    const sol = solveSystem(n.geom, n.constraints, { dragHandle: { key: a, from: [0, 0], to: [20, 30] } });
+    assert.ok(sol.feasible, '应在容差内有确定解');
+    const P = sol.coords;
+    const expected = [[20, 30], [120, 30], [120, 130], [20, 130]];
+    for (const [k, p] of [[a, 0], [b, 1], [c, 2], [d, 3]]) {
+      assert.ok(near(P.get(k)[0], expected[p][0], 1e-3) && near(P.get(k)[1], expected[p][1], 1e-3),
+        `${k} 联动错误: ${P.get(k)} != ${expected[p]}`);
+    }
+  });
+
+  test('锁定一条边后施加固定角度：锁定边不动，只有未锁定部分移动', () => {
+    const n = cNode([[0, 0], [100, 0], [100, 80], [0, 100]]);
+    const [a, b, c, d] = keys(n);
+    addOk(n, { kind: 'lock-edge', edge: E(a, b) });
+    addOk(n, { kind: 'fixed-angle', edge: E(b, c), value: degToRad(45) });
+    // 固定 d，使 c 的位置确定（仅 c 自由）
+    const sol = solveSystem(n.geom, n.constraints, { pins: new Map([[d, n.geom[0][0][3]]]) });
+    assert.ok(sol.feasible);
+    const P = sol.coords;
+    assert.ok(near(P.get(a)[0], 0) && near(P.get(a)[1], 0), '锁定边端点 a 移动了');
+    assert.ok(near(P.get(b)[0], 100) && near(P.get(b)[1], 0), '锁定边端点 b 移动了');
+    assert.ok(near(radToDeg(edgeAngle(P.get(b), P.get(c))), 45, 1e-3), 'bc 方向不是 45°');
+    assert.ok(P.get(c)[0] !== 100 || P.get(c)[1] !== 80, '未锁定顶点 c 未移动');
+  });
+
+  test('同一组约束按不同创建顺序 → 相同坐标哈希（顺序无关、结果确定）', () => {
+    const build = order => {
+      const n = cNode([[0, 0], [100, 0], [100, 100], [0, 100]]);
+      const [a, b, c, d] = keys(n);
+      const specs = [
+        { kind: 'horizontal', edge: E(a, b) },
+        { kind: 'vertical', edge: E(b, c) },
+        { kind: 'equal-length', edges: [E(a, b), E(b, c)] },
+        { kind: 'parallel', edges: [E(a, b), E(c, d)] },
+        { kind: 'perpendicular', edges: [E(c, d), E(d, a)] },
+      ];
+      for (const i of order) addOk(n, specs[i]);
+      const sol = solveSystem(n.geom, n.constraints, { dragHandle: { key: a, from: [0, 0], to: [23, 41] } });
+      return { h: coordsHash(sol.coords), maxR: sol.maxResidual };
+    };
+    const r1 = build([0, 1, 2, 3, 4]);
+    const r2 = build([4, 2, 0, 3, 1]);
+    const r3 = build([1, 3, 4, 0, 2]);
+    assert.equal(r2.h, r1.h);
+    assert.equal(r3.h, r1.h);
+  });
+
+  test('固定长度与两个锁定端点矛盾：拒绝确认、不落盘、指出造成无解的约束组合', () => {
+    const n = cNode([[0, 0], [100, 0], [100, 100], [0, 100]]);
+    const [a, b] = keys(n);
+    addOk(n, { kind: 'lock-point', vertex: a });
+    addOk(n, { kind: 'lock-point', vertex: b });
+    const before = JSON.stringify({ g: n.geom, d: constraintsDigest(n.constraints) });
+    const pv = previewItemsChange(n, EPS, { add: [{ kind: 'fixed-length', edge: E(a, b), value: 142 }] });
+    assert.ok(!pv.ok, '矛盾约束必须被拒绝');
+    assert.deepEqual(pv.coreIds.slice().sort(),
+      n.constraints.items.map(i => i.id).concat([pv.candidates[0].id]).sort(),
+      '冲突核应包含两条锁定 + 固定长度');
+    // 拒绝后几何与约束状态完全不变（没有半条约束、顶点没动）
+    assert.equal(JSON.stringify({ g: n.geom, d: constraintsDigest(n.constraints) }), before);
+    // 诊断把三条都标为冲突
+    const trialNode = { ...n, constraints: pv.nextCs };
+    const diag = evaluate(trialNode);
+    assert.ok(!diag.feasible);
+    assert.equal(diag.coreIds.length, 3);
+  });
+
+  test('停用冲突核中的任一项：预览恢复且可以确认写入', () => {
+    const n = cNode([[0, 0], [100, 0], [100, 100], [0, 100]]);
+    const [a, b] = keys(n);
+    addOk(n, { kind: 'lock-point', vertex: a });
+    addOk(n, { kind: 'lock-point', vertex: b });
+    const fl = (() => {
+      const pv = previewItemsChange(n, EPS, { add: [{ kind: 'fixed-length', edge: E(a, b), value: 142 }] });
+      assert.ok(!pv.ok);
+      return pv.candidates[0];
+    })();
+    // 停用固定长度（候选）即可解
+    const s1 = solveSystem(n.geom, n.constraints, { excludeIds: new Set([fl.id]), extraItems: [] });
+    assert.ok(s1.feasible);
+    // 停用任一锁定端点 + 保留固定长度也可解
+    const lockId = n.constraints.items.find(i => i.kind === 'lock-point').id;
+    const s2 = solveSystem(n.geom, n.constraints, { excludeIds: new Set([lockId]), extraItems: [fl] });
+    assert.ok(s2.feasible);
+    // 停用固定长度后通过预览写入：enabled:false 的新约束不参与求解，系统可确认
+    const flOff = { ...fl, enabled: false };
+    const s3 = solveSystem(n.geom, n.constraints, { extraItems: [flOff] });
+    assert.ok(s3.feasible, '停用造成冲突的约束后应恢复可解');
+  });
+
+  test('同一顶点参与多组约束仍在容差内确定', () => {
+    const n = cNode([[0, 0], [90, 0], [90, 90], [0, 90]]);
+    const [a, b, c, d] = keys(n);
+    addOk(n, { kind: 'horizontal', edge: E(a, b) });
+    addOk(n, { kind: 'vertical', edge: E(d, a) });
+    addOk(n, { kind: 'fixed-length', edge: E(a, b), value: 90 });
+    addOk(n, { kind: 'equal-length', edges: [E(a, b), E(d, a)] });
+    addOk(n, { kind: 'perpendicular', edges: [E(a, b), E(d, a)] });
+    const sol = solveSystem(n.geom, n.constraints, { dragHandle: { key: a, from: [0, 0], to: [10, 20] } });
+    assert.ok(sol.feasible);
+    assert.ok(near(sol.coords.get(c)[0], 100, 1e-3) && near(sol.coords.get(c)[1], 110, 1e-3));
+  });
+
+  test('删除被多约束引用的顶点：取消不改变状态，确认按预告原子处理全部引用', () => {
+    const n = cNode([[0, 0], [100, 0], [100, 100], [50, 150], [0, 100]]);
+    const [a, b, c, e, d] = keys(n);
+    addOk(n, { kind: 'horizontal', edge: E(a, b) });
+    addOk(n, { kind: 'equal-length', edges: [E(c, e), E(e, d)] });
+    addOk(n, { kind: 'fixed-length', edge: E(d, e), value: Math.hypot(50, 50) });
+    addOk(n, { kind: 'perpendicular', edges: [E(c, e), E(e, d)] });
+    const before = JSON.stringify({ g: n.geom, d: constraintsDigest(n.constraints) });
+    const plan = planVertexRemoval(n, e, EPS);
+    assert.ok(plan.ok, plan.reason);
+    assert.ok(plan.removed.length + plan.rewritten.length + plan.kept.length === n.constraints.items.length);
+    // 取消：完全不变
+    assert.equal(JSON.stringify({ g: n.geom, d: constraintsDigest(n.constraints) }), before);
+    // 确认：几何少一个顶点，保留+改写的约束身份集合与预告一致
+    const applied = (() => {
+      const m = JSON.parse(JSON.stringify(n));
+      m.geom = plan.nextGeom; m.constraints = plan.nextCs;
+      return m;
+    })();
+    assert.equal(applied.geom[0][0].length, 4);
+    const remain = applied.constraints.items.map(i => i.id).sort();
+    const expectIds = plan.kept.concat(plan.rewritten).map(r => r.item.id).sort();
+    assert.deepEqual(remain, expectIds);
+    // 改写的约束 id 身份保留，但引用已指向新边
+    const fl = applied.constraints.items.find(i => i.kind === 'fixed-length');
+    assert.ok(fl, '邻边 fixed-length 应迁移保留');
+    assert.ok(!JSON.stringify(fl).includes(e), '改写后不应再引用被删顶点');
+  });
+
+  test('合并顶点：重合类约束失效、邻边约束改写、id 身份保留，取消不变', () => {
+    const n = cNode([[0, 0], [100, 0], [100, 80], [60, 140], [0, 80]]);
+    const [a, b, c, e, d] = keys(n);
+    addOk(n, { kind: 'equal-length', edges: [E(c, e), E(e, d)] });
+    addOk(n, { kind: 'fixed-length', edge: E(c, e), value: Math.hypot(40, 60) });
+    const before = JSON.stringify({ g: n.geom, d: constraintsDigest(n.constraints) });
+    const plan = planVertexMerge(n, e, b, EPS);
+    assert.ok(plan.ok, plan.reason);
+    assert.ok(plan.rewritten.some(r => r.from.kind === 'equal-length'));
+    assert.ok(plan.rewritten.some(r => r.from.kind === 'fixed-length'));
+    // id 保留
+    const beforeIds = n.constraints.items.map(i => i.id).sort();
+    const afterIds = plan.nextCs.items.map(i => i.id).sort();
+    assert.deepEqual(afterIds, beforeIds);
+    // 取消不变
+    assert.equal(JSON.stringify({ g: n.geom, d: constraintsDigest(n.constraints) }), before);
+  });
+
+  test('停用/启用约束：身份保留，状态分类为 off 且不参与求解', () => {
+    const n = cNode([[0, 0], [100, 0], [100, 100], [0, 100]]);
+    const [a, b] = keys(n);
+    addOk(n, { kind: 'fixed-length', edge: E(a, b), value: 100 });
+    const id = n.constraints.items[0].id;
+    const pv = previewItemsChange(n, EPS, { toggle: { id, enabled: false } });
+    assert.ok(pv.ok);
+    assert.equal(pv.nextCs.items[0].enabled, false);
+    assert.equal(pv.nextCs.items[0].id, id, '停用必须保留约束 id');
+    const probe = { ...n, geom: pv.nextGeom, constraints: pv.nextCs };
+    assert.equal(evaluate(probe).statusById[id], 'off');
+  });
+
+  test('evaluate 区分已满足 / 冲突，诊断摘要稳定', () => {
+    const n = cNode([[0, 0], [100, 0], [100, 100], [0, 100]]);
+    const [a, b, c, d] = keys(n);
+    addOk(n, { kind: 'lock-point', vertex: a });
+    addOk(n, { kind: 'lock-point', vertex: b });
+    addOk(n, { kind: 'fixed-length', edge: E(a, b), value: 100 });
+    assert.ok(evaluate(n).feasible);
+    // 制造矛盾（改数值，不动几何）
+    const fl = n.constraints.items.find(i => i.kind === 'fixed-length');
+    fl.value = 142;
+    const ev1 = evaluate(n);
+    const ev2 = evaluate(n);
+    assert.ok(!ev1.feasible);
+    assert.equal(ev1.counts.conflict, 3);
+    // 诊断摘要确定性
+    assert.equal(ev1.summary, ev2.summary);
+  });
+
+  test('整体平移/缩放时约束锚点与固定长度同步', () => {
+    const n = cNode([[0, 0], [100, 0], [100, 100], [0, 100]]);
+    const [a] = keys(n);
+    addOk(n, { kind: 'lock-point', vertex: a });
+    const cs = JSON.parse(JSON.stringify(n.constraints));
+    translateConstraints(n.constraints, 10, -5);
+    assert.deepEqual(n.constraints.items[0].at, [10, -5]);
+    // 还原后缩放 2（绕原点）：锁点 (0,0) 不动
+    n.constraints = cs;
+    scaleConstraints(n.constraints, 2, [0, 0]);
+    assert.deepEqual(n.constraints.items[0].at, [0, 0]);
+  });
+});
+
+// ---------- 约束与历史 / 刷新一致性 ----------
+suite('约束历史 / 撤销重做 / 刷新', () => {
+  test('约束进入快照与场景哈希：撤销重做恢复坐标、身份、启停与诊断', () => {
+    const d = createDocument();
+    const geom = [[[[0, 0], [100, 0], [100, 100], [0, 100]]]]; // 不经规范化，保持顶点序
+    const node = addRoot(d, 'R', geom, '#1');
+    ensureConstraints(node);
+    const h = createHistory();
+    pushEntry(h, snapshotFromDoc(d, []), { label: '初始' });
+    const [a, b, c] = node.constraints.vkeys[0][0];
+    const pv = previewItemsChange(node, EPS, { add: [
+      { kind: 'horizontal', edge: { a, b } },
+      { kind: 'vertical', edge: { a: b, b: c } },
+      { kind: 'lock-point', vertex: a },
+    ] });
+    assert.ok(pv.ok, pv.reason);
+    node.geom = pv.nextGeom; node.constraints = pv.nextCs;
+    pushEntry(h, snapshotFromDoc(d, []), { label: '加约束' });
+    const id = node.constraints.items.find(i => i.kind === 'lock-point').id;
+    const hashWith = sceneHash(h.entries[1].snapshot);
+
+    // 撤销：约束消失、哈希回到无约束
+    const s0 = undo(h);
+    const n0 = s0.doc.nodes.find(x => x.id === node.id);
+    assert.ok(!n0.constraints || n0.constraints.items.length === 0);
+    // 重做：身份、启停、几何全恢复
+    const s1 = redo(h);
+    const n1 = s1.doc.nodes.find(x => x.id === node.id);
+    assert.equal(n1.constraints.items.length, 3);
+    assert.ok(n1.constraints.items.some(i => i.id === id && i.kind === 'lock-point'));
+    assert.equal(sceneHash(s1), hashWith);
+    const diag = evaluate(n1);
+    assert.ok(diag.feasible);
+  });
+
+  test('刷新模拟：约束结构、启停、几何与诊断摘要哈希逐条一致', () => {
+    const d = createDocument();
+    const node = addRoot(d, 'R', normalizeGeom([sqRing(0, 0, 100)], EPS), '#1');
+    ensureConstraints(node);
+    const h = createHistory();
+    pushEntry(h, snapshotFromDoc(d, []), { label: '初始' });
+    const [a, b, c, q] = node.constraints.vkeys[0][0];
+    const pv = previewItemsChange(node, EPS, { add: [
+      { kind: 'horizontal', edge: { a, b } },
+      { kind: 'vertical', edge: { a: b, b: c } },
+    ] });
+    node.geom = pv.nextGeom; node.constraints = pv.nextCs;
+    pushEntry(h, snapshotFromDoc(d, []), { label: '加约束' });
+    // 停用一条
+    const pv2 = previewItemsChange(node, EPS, { toggle: { id: node.constraints.items[0].id, enabled: false } });
+    node.geom = pv2.nextGeom; node.constraints = pv2.nextCs;
+    pushEntry(h, snapshotFromDoc(d, []), { label: '停用' });
+
+    const json = serializeHistory(h, EPS);
+    const { history: h2, mismatches } = deserializeHistory(json);
+    assert.equal(mismatches.length, 0);
+    const cur = h2.entries[h2.index].snapshot.doc.nodes[0];
+    assert.equal(cur.constraints.items.length, 2);
+    assert.equal(cur.constraints.items.some(i => !i.enabled), true);
+    // 重新求解当前图形：满足状态与诊断保持一致
+    assert.ok(evaluate(cur).statusById);
+    assert.equal(sceneHash(h2.entries[h2.index].snapshot), h.entries[h.index].hash);
+  });
+
+  test('约束拖动预览不落盘：Esc/取消后状态与哈希不变', () => {
+    const n = { id: 'r1', name: 'R', kind: 'root', geom: [[[[0, 0], [100, 0], [100, 100], [0, 100]]]] };
+    ensureConstraints(n);
+    const [a, b, c] = n.constraints.vkeys[0][0];
+    const pv = previewItemsChange(n, EPS, { add: [
+      { kind: 'horizontal', edge: { a, b } },
+      { kind: 'vertical', edge: { a: b, b: c } },
+      { kind: 'equal-length', edges: [{ a, b }, { a: b, b: c }] },
+    ] });
+    assert.ok(pv.ok, pv.reason);
+    n.geom = pv.nextGeom; n.constraints = pv.nextCs;
+    const before = JSON.stringify({ g: n.geom, d: constraintsDigest(n.constraints) });
+    const dragKey = n.constraints.vkeys[0][0][0];
+    const from = n.geom[0][0][0];
+    const sol = solveSystem(n.geom, n.constraints, { dragHandle: { key: dragKey, from, to: [from[0] + 40, from[1] + 50] } });
+    assert.ok(sol.feasible);
+    // 预览坐标确实不同于原位置
+    assert.ok(Math.abs(sol.coords.get(dragKey)[0] - from[0]) > 1);
+    // 取消：原几何/约束不变（求解是纯函数，从未写回）
+    assert.equal(JSON.stringify({ g: n.geom, d: constraintsDigest(n.constraints) }), before);
   });
 });
 

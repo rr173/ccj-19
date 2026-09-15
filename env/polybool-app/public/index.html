@@ -44,9 +44,26 @@
     </div>
     <div class="group">
       <div class="group-title">选中图形</div>
+      <button id="btn-verts">✥ 顶点/约束编辑（双击图形）</button>
       <button id="btn-freeze">❄ 冻结为普通图形</button>
       <button id="btn-unfreeze">🔥 解冻并恢复跟随</button>
       <button id="btn-delete" class="danger">删除 (Del)</button>
+    </div>
+    <div class="group" id="constraint-tools">
+      <div class="group-title">几何约束（顶点编辑模式）</div>
+      <div id="pick-status" class="pick-status">未选择元素（点击顶点/边拾取）</div>
+      <button id="c-coincident" disabled>≡ 两顶点重合</button>
+      <button id="c-horizontal" disabled>— 边水平</button>
+      <button id="c-vertical" disabled">│ 边竖直</button>
+      <button id="c-equal" disabled">≈ 两边等长</button>
+      <button id="c-fixedlen" disabled>⇆ 边固定长度…</button>
+      <button id="c-parallel" disabled">∥ 两边平行</button>
+      <button id="c-perp" disabled">⊥ 两边正交</button>
+      <button id="c-angle" disabled">∡ 边固定角度…</button>
+      <button id="c-lock-point" disabled>🔩 锁定顶点</button>
+      <button id="c-lock-edge" disabled">🔒 锁定整条边</button>
+      <button id="btn-del-vertex" disabled>删除拾取的顶点…</button>
+      <button id="btn-merge-verts" disabled>合并两个顶点…</button>
     </div>
     <div class="group tips">
       <div class="group-title">依赖规则</div>
@@ -76,9 +93,28 @@
         </div>
       </div>
     </div>
+    <div id="dialog-backdrop" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-title" id="dialog-title"></div>
+        <div id="dialog-body" class="modal-body"></div>
+        <div class="modal-actions" id="dialog-actions"></div>
+      </div>
+    </div>
   </section>
 
   <aside id="panels">
+    <div class="panel" id="constraints-panel">
+      <div class="panel-title">几何约束（✓ 已满足 / ⚠ 暂时偏离 / ✗ 冲突 / ⊘ 停用）</div>
+      <div id="constraints-list"><div class="muted">进入顶点编辑模式后为图形添加约束。</div></div>
+      <div id="conflict-box" class="conflict-box hidden"></div>
+      <div id="preview-bar" class="preview-bar hidden">
+        <span id="preview-text">预览中…</span>
+        <span class="pv-btns">
+          <button id="pv-confirm" class="ok">确认写入</button>
+          <button id="pv-cancel" class="danger">取消 (Esc)</button>
+        </span>
+      </div>
+    </div>
     <div class="panel" id="shapes-panel">
       <div class="panel-title">图形与依赖（点击选中；虚线=派生，❄=冻结）</div>
       <div id="shapes-list"></div>

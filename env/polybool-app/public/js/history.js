@@ -6,8 +6,9 @@
 // 依赖边、冻结状态、几何结果、重算日志摘要与其哈希。
 
 import { geomHash } from './model.js';
+import { constraintsDigest, evaluate } from './constraints.js';
 
-export const HISTORY_VERSION = 2;
+export const HISTORY_VERSION = 3;
 export const HISTORY_LIMIT = 200;
 
 /** 文档快照深拷贝（几何 + 图结构 + rounds），JSON 可序列化数据全部安全。 */
@@ -24,7 +25,11 @@ export function snapshotFromDoc(doc, selected) {
 
 function deepCopyDocLight(doc) {
   return {
-    nodes: doc.nodes.map(n => ({ ...n, geom: n.geom.map(p => p.map(r => r.map(pt => [pt[0], pt[1]]))) })),
+    nodes: doc.nodes.map(n => ({
+      ...n,
+      geom: n.geom.map(p => p.map(r => r.map(pt => [pt[0], pt[1]]))),
+      constraints: n.constraints ? JSON.parse(JSON.stringify(n.constraints)) : undefined,
+    })),
     seqCounter: doc.seqCounter,
     rounds: deepCopyRounds(doc.rounds || []),
   };
@@ -44,7 +49,12 @@ export function sceneHash(snapshot) {
     const dep = n.kind === 'derived'
       ? `:${n.op}:${(n.sources || []).join(',')}:${n.eps}:${n.frozen ? 1 : 0}`
       : ':root';
-    return `${n.id}${dep}:${geomHash(n.geom)}`;
+    // 约束结构（vkeys/身份/启停/数值/锚点）+ 当前几何上的约束诊断摘要一起入哈希，
+    // 因此刷新后约束满足状态与冲突诊断也被逐条校验。
+    const cpart = n.constraints
+      ? `:c=${constraintsDigest(n.constraints)}:cd=${evaluate(n).summary}`
+      : ':c=';
+    return `${n.id}${dep}${cpart}:${geomHash(n.geom)}`;
   });
   const lastRound = doc.rounds && doc.rounds.length ? doc.rounds[doc.rounds.length - 1] : null;
   const roundPart = lastRound
@@ -118,7 +128,7 @@ export function serializeHistory(h, eps) {
  */
 export function deserializeHistory(json) {
   const data = JSON.parse(json);
-  if (!data || data.version !== HISTORY_VERSION || !Array.isArray(data.entries)) {
+  if (!data || (data.version !== HISTORY_VERSION && data.version !== 2) || !Array.isArray(data.entries)) {
     throw new Error('历史数据版本不兼容或已损坏');
   }
   const history = { entries: data.entries, index: data.index };
