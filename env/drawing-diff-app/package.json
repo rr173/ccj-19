@@ -1,0 +1,11 @@
+{
+  "name": "drawing-diff-app",
+  "version": "1.0.0",
+  "description": "二维图纸版本对比与变更审阅：锚点配准、图元对应、五类变更标记、人工消歧与固定、重算回滚、决议批注与只读签署快照",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/run-tests.js && node test/dom-shim-test.js"
+  },
+  "license": "MIT"
+}

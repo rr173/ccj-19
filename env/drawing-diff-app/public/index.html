@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>二维图纸版本对比与变更审阅</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">📐 图纸版本对比 · 变更审阅</div>
+  <div class="imports">
+    <label class="file-btn">基线稿
+      <input id="base-file" type="file" accept=".json,application/json" hidden>
+    </label>
+    <span id="base-file-name" class="file-name muted">未导入</span>
+    <label class="file-btn">候选稿
+      <input id="cand-file" type="file" accept=".json,application/json" hidden>
+    </label>
+    <span id="cand-file-name" class="file-name muted">未导入</span>
+  </div>
+  <div class="demos">
+    示例：
+    <button data-demo="rigid">刚体移动</button>
+    <button data-demo="holeMove">孔位偏移</button>
+    <button data-demo="split">区域拆分</button>
+    <button data-demo="ambiguous">双候选消歧</button>
+    <button data-demo="noise">噪声对比</button>
+  </div>
+  <div class="who">审阅人 <input id="reviewer-name" value="张工"></div>
+</header>
+
+<div id="status-bar" class="status-bar muted">请导入基线稿与候选稿（dwg2d-diff/1 JSON），或载入示例。</div>
+
+<main class="layout">
+  <section class="canvas-wrap">
+    <div class="canvas-tools">
+      <button id="btn-fit">适应窗口</button>
+      <label class="inline"><input type="checkbox" class="layer-toggle" data-layer="base" checked> 基线稿（蓝实线）</label>
+      <label class="inline"><input type="checkbox" class="layer-toggle" data-layer="cand" checked> 候选稿（橙虚线）</label>
+      <label class="inline"><input type="checkbox" class="layer-toggle" data-layer="diffs" checked> 差异标记</label>
+      <label class="inline"><input type="checkbox" class="layer-toggle" data-layer="anchors" checked> 锚点</label>
+      <span class="muted small">滚轮缩放 · 拖拽平移 · 点击标记定位</span>
+    </div>
+    <canvas id="canvas"></canvas>
+  </section>
+
+  <aside class="sidebar">
+    <nav id="tabs">
+      <button id="tab-diffs" class="on">差异</button>
+      <button id="tab-pending">待消歧</button>
+      <button id="tab-detail">详情/批注</button>
+      <button id="tab-reg">配准</button>
+      <button id="tab-sign">公差/签署</button>
+      <button id="tab-snapshots">快照</button>
+    </nav>
+
+    <div id="pane-diffs" class="tabpane on">
+      <div id="diff-list" class="scroll"><div class="empty">尚未导入图纸</div></div>
+    </div>
+    <div id="pane-pending" class="tabpane">
+      <div id="pending-panel" class="scroll"><div class="empty">尚未导入图纸</div></div>
+    </div>
+    <div id="pane-detail" class="tabpane">
+      <div id="detail-panel" class="scroll"><div class="empty">点击差异查看完整前后数值与批注</div></div>
+    </div>
+    <div id="pane-reg" class="tabpane">
+      <div id="reg-panel" class="scroll"><div class="empty">尚未导入图纸</div></div>
+    </div>
+    <div id="pane-sign" class="tabpane">
+      <div id="sign-panel" class="scroll"><div class="empty">尚未导入图纸</div></div>
+    </div>
+    <div id="pane-snapshots" class="tabpane">
+      <div id="snapshot-panel" class="scroll"></div>
+      <button id="btn-clear-storage" class="danger-ghost small">清空本地持久化</button>
+    </div>
+  </aside>
+</main>
+
+<div id="flash" class="flash"></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
