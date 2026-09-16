@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>数控切割刀路生成 · 刀径补偿 / 连接桥 / 引入线 / 禁穿区</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header>
+  <h1>数控切割刀路生成</h1>
+  <span class="badge" id="calc-badge">待计算</span>
+  <span class="spacer"></span>
+  <label>示例场景
+    <select id="scenario-select"></select>
+  </label>
+  <button id="btn-fit">适应视图</button>
+</header>
+
+<main>
+  <!-- 左：参数与区域 -->
+  <aside id="toolbar">
+    <div class="group">
+      <div class="group-title">刀具与补偿</div>
+      <label class="row">刀具直径 Ø(mm)
+        <input id="in-tool" type="number" min="0.1" step="0.5" value="4">
+      </label>
+      <label class="row">加工侧
+        <select id="in-side">
+          <option value="auto" selected>自动（外轮廓向外 / 洞向内）</option>
+          <option value="left">手动左补偿（材料侧）</option>
+        </select>
+      </label>
+      <div class="hint">统一规则：规范方向（外=CCW，洞=CW）下材料恒在左侧，刀具中心恒向右侧空气补偿。</div>
+    </div>
+
+    <div class="group">
+      <div class="group-title">切入 / 切出方式</div>
+      <label class="row">切入方式
+        <select id="in-lead-type">
+          <option value="line" selected>垂直直线引入</option>
+          <option value="arc">90° 切向圆弧引入</option>
+        </select>
+      </label>
+      <label class="row">引入长度(mm)
+        <input id="in-lead-len" type="number" min="1" step="1" value="6">
+      </label>
+      <div class="hint">引入线从空气侧进入；自动选边，要求整段不穿未切实体、不穿禁穿区。</div>
+    </div>
+
+    <div class="group">
+      <div class="group-title">连接桥（微连）</div>
+      <label class="row">每轮廓桥数量
+        <input id="in-bridge-n" type="number" min="0" step="1" value="2">
+      </label>
+      <label class="row">桥宽(mm)
+        <input id="in-bridge-w" type="number" min="0.5" step="0.5" value="3">
+      </label>
+      <label class="row">距尖角最小距(mm)
+        <input id="in-bridge-corner" type="number" min="0" step="1" value="4">
+      </label>
+      <label class="row">距引入线最小距(mm)
+        <input id="in-bridge-lead" type="number" min="0" step="1" value="5">
+      </label>
+      <div class="hint">桥只放在补偿后的有效直线段上；尖角圆弧、引入点附近禁止放桥。放不下会逐轮廓报告缺口。</div>
+    </div>
+
+    <div class="group">
+      <div class="group-title">起刀候选区 / 禁止穿越区</div>
+      <div class="zone-btns">
+        <button id="btn-add-start-region">＋ 起刀候选区</button>
+        <button id="btn-add-no-cross">＋ 禁止穿越区</button>
+        <button id="btn-del-zones">清空区域</button>
+      </div>
+      <div id="zones-list" class="zones-list"></div>
+      <div class="hint">候选区：外轮廓起刀点必须落在其内；禁穿区：引入线、引出线与抬刀空移一律绕行。抬刀空移同时绕行尚未切开的其它零件（通往内部洞/岛时对所属外环的必要跨越除外）。</div>
+    </div>
+
+    <div class="group">
+      <div class="group-title">确定性自检</div>
+      <button id="btn-shuffle">打乱图形/环输入顺序后重算</button>
+      <div id="shuffle-result" class="hint">点击后对比段编号、加工次序与导出文本是否逐字节一致。</div>
+    </div>
+
+    <div class="group">
+      <div class="group-title">显示图层</div>
+      <label class="check"><input type="checkbox" id="layer-orig" checked> 原始轮廓</label>
+      <label class="check"><input type="checkbox" id="layer-off" checked> 补偿轨迹</label>
+      <label class="check"><input type="checkbox" id="layer-dir" checked> 加工方向箭头</label>
+      <label class="check"><input type="checkbox" id="layer-rapid" checked> 抬刀/空移段</label>
+      <label class="check"><input type="checkbox" id="layer-bridge" checked> 连接桥</label>
+      <label class="check"><input type="checkbox" id="layer-lead" checked> 引入/引出线</label>
+      <label class="check"><input type="checkbox" id="layer-segno" checked> 段编号</label>
+    </div>
+  </aside>
+
+  <!-- 中：画布 -->
+  <section id="canvas-wrap">
+    <canvas id="canvas"></canvas>
+    <div id="hint">滚轮缩放 · 拖拽平移 · 点击路径段/列表行逐段检查</div>
+    <div id="seg-tip" class="seg-tip hidden"></div>
+  </section>
+
+  <!-- 右：诊断、段表、导出 -->
+  <aside id="panels">
+    <div class="panel" id="verify-panel">
+      <div class="panel-title">导出前复核（补偿距离 / 先后关系 / 穿越 / 桥位 / 长度对账）</div>
+      <div id="verify-list"></div>
+      <div class="export-bar">
+        <button id="btn-export" class="primary">重新校验并导出加工文件</button>
+        <span id="export-state" class="export-state"></span>
+      </div>
+    </div>
+
+    <div class="panel" id="order-panel">
+      <div class="panel-title">加工次序（先内后外；互不包含按稳定最近邻）</div>
+      <div id="order-list"></div>
+    </div>
+
+    <div class="panel" id="diag-panel">
+      <div class="panel-title">轮廓诊断（补偿失效 / 引入受阻 / 桥缺口）</div>
+      <div id="diag-list"></div>
+    </div>
+
+    <div class="panel grow">
+      <div class="panel-title">
+        路径段逐段检查
+        <span id="seg-summary" class="muted"></span>
+      </div>
+      <div id="seg-list" class="seg-list"></div>
+    </div>
+  </aside>
+</main>
+
+<script src="/js/cam.js"></script>
+<script src="/js/scenarios.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>

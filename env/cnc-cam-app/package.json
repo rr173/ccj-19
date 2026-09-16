@@ -1,0 +1,10 @@
+{
+  "name": "cnc-cam-app",
+  "version": "1.0.0",
+  "description": "数控切割刀路生成页面：刀径补偿、补偿失效诊断、先内后外加工次序、引入/引出绕障、连接桥、稳定编号、导出前复核",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/run-tests.js && node test/dom-shim-test.js"
+  },
+  "license": "MIT"
+}
