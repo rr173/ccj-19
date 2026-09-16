@@ -26,6 +26,17 @@ import {
 } from './constraints.js';
 
 const STORAGE_KEY = 'polybool.graph.v3';
+// 加工界面（cnc-cam-app）地址：可用 ?camApp=... 覆盖以适配不同部署（端口/反向代理）。
+// 每次进入都把选中对象“当时”的轮廓坐标序列化进 URL hash；对象移动/缩放/调顶点后再次进入即为更新后的坐标。
+const DEFAULT_CAM_APP_URL = 'http://localhost:8081/';
+function camAppUrl() {
+  try {
+    const u = new URL(location.href);
+    const override = u.searchParams.get('camApp');
+    if (override) return new URL(override, location.href).href;
+  } catch { /* ignore */ }
+  return (typeof window !== 'undefined' && window.CAM_APP_URL) || DEFAULT_CAM_APP_URL;
+}
 const PALETTE = ['#4f8ef7', '#f76f6f', '#3fbf7f', '#f7a83f', '#a06ef7', '#f75fb0', '#3fc4c4', '#b8b83f'];
 const f2 = v => Math.round(v * 100) / 100;// ---------- 状态 ----------
 
@@ -61,7 +72,7 @@ const els = {
   operands: $('operands'),
   undo: $('btn-undo'), redo: $('btn-redo'), fit: $('btn-fit'), reset: $('btn-reset'),
   freeze: $('btn-freeze'), unfreeze: $('btn-unfreeze'), del: $('btn-delete'),
-  btnVerts: $('btn-verts'),
+  btnVerts: $('btn-verts'), btnToCam: $('btn-to-cam'),
   eps: $('eps-input'),
   badge: $('reload-badge'),
   toast: $('toast'),
@@ -1260,6 +1271,28 @@ function doBoolean(op) {
   syncOperandUI();
 }
 
+// ---------- 进入加工界面（携带该对象当前轮廓坐标） ----------
+
+/**
+ * 把当前选中对象“进入时”的轮廓交给加工界面：直接序列化 node.geom（MultiPolygon），
+ * 因此移动 / 缩放 / 顶点调整落盘后的最新坐标会被原样带走——不使用加工界面的预置案例。
+ */
+function openInCamApp() {
+  const n = selectedNode();
+  if (!n) { showToast('请先在画布上选中一个对象，再进入加工界面', 'info'); return; }
+  const payload = JSON.stringify({ version: 1, name: n.name, geom: n.geom });
+  const enc = encodeURIComponent(payload);
+  // 用 hash 传递：不发往服务器、长度限制比 query 宽松，足以承载复杂轮廓
+  const url = `${camAppUrl()}#canvas=${enc}`;
+  const LIMIT = 900_000; // 各浏览器对 URL 长度的安全余量
+  if (url.length > LIMIT) {
+    showToast('该对象轮廓顶点过多，URL 数据过长，无法进入加工界面（请先简化轮廓）', 'error');
+    return;
+  }
+  const win = window.open(url, '_blank', 'noopener');
+  if (!win) showToast('浏览器拦截了新窗口：请允许弹出窗口后重试', 'error');
+}
+
 // ---------- 冻结 / 解冻 ----------
 
 function doFreeze() {
@@ -1604,6 +1637,8 @@ function syncOperandUI() {
   const sn = selectedNode();
   els.btnVerts.disabled = !(sn && !isDerived(sn));
   els.btnVerts.classList.toggle('active', state.mode === 'verts');
+  // 进入加工界面：恰好选中一个对象（普通/派生/冻结均可，取其当前几何）
+  els.btnToCam.disabled = state.selected.length !== 1;
 }
 
 function syncModeUI() {
@@ -1650,6 +1685,7 @@ els.btnVerts.addEventListener('click', () => {
   if (isDerived(n)) { showToast('派生图形的顶点由来源决定，不能直接编辑（可先冻结）', 'info'); return; }
   enterVertMode(n.id);
 });
+els.btnToCam.addEventListener('click', openInCamApp);
 // 几何约束按钮
 for (const kind of Object.keys(els.cBtns)) {
   els.cBtns[kind].addEventListener('click', () => addConstraintFromPicks(kind));

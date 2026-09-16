@@ -5,6 +5,7 @@ const Vec = CAM.V;
 
 const state = {
   scenarioId: 'two-holes',
+  canvasSource: null,    // 非 null 时表示输入来自产品画布选中对象（{ name }），而非预置场景
   rings: [],
   zones: [],
   home: { x: 0, y: 0 },
@@ -52,6 +53,7 @@ function loadScenario(id) {
   const sc = SCENARIOS.find((s) => s.id === id);
   if (!sc) return;
   state.scenarioId = id;
+  state.canvasSource = null;
   state.rings = sc.rings.map((r) => ({ ...r, points: r.points.map((p) => ({ ...p })) }));
   state.zones = (sc.zones || []).map((z) => ({ ...z, points: z.points.map((p) => ({ ...p })) }));
   state.home = { ...sc.home };
@@ -59,6 +61,44 @@ function loadScenario(id) {
   state.activeSegNo = null;
   recompute();
   fitView();
+}
+
+/* --------------------- 产品画布选中对象 → 加工输入 --------------------- */
+// 从产品画布（polybool-app）携带该对象“进入时”的轮廓坐标跳转过来；
+// 不读取任何预置场景。对象每次移动/缩放/调顶点后再次进入，携带的都是更新后的坐标。
+function loadCanvasInput(parsed) {
+  state.canvasSource = { name: parsed.name };
+  state.scenarioId = CanvasInput.CANVAS_SOURCE_ID;
+  state.rings = parsed.input.rings.map((r) => ({
+    ...r,
+    points: r.points.map((p) => ({ ...p })),
+  }));
+  state.zones = [];
+  state.home = { ...parsed.input.home };
+  state.activeSegNo = null;
+  recompute();
+  fitView();
+  toast(`已载入产品画布对象「${parsed.name}」进入加工：轮廓坐标取进入时的最新值`, 'ok');
+}
+
+/** 在“示例场景”下拉中放置/移除“产品画布对象”项，并同步选中态。 */
+function syncScenarioSelect() {
+  const sel = $('scenario-select');
+  const existing = Array.from(sel.options || []).find((o) => o.value === CanvasInput.CANVAS_SOURCE_ID);
+  if (state.canvasSource) {
+    if (!existing) {
+      const o = document.createElement('option');
+      o.value = CanvasInput.CANVAS_SOURCE_ID;
+      o.textContent = '产品画布对象：' + state.canvasSource.name;
+      sel.appendChild(o);
+    } else {
+      existing.textContent = '产品画布对象：' + state.canvasSource.name;
+    }
+    sel.value = CanvasInput.CANVAS_SOURCE_ID;
+  } else if (existing && typeof existing.remove === 'function') {
+    existing.remove();
+    sel.value = state.scenarioId;
+  }
 }
 
 function currentInput(shuffle = false) {
@@ -384,13 +424,17 @@ function renderPanels() {
   renderZones();
   const badge = $('calc-badge');
   if (res.verification.exportBlocked) {
-    badge.textContent = `复核未通过 · ${res.verification.failCount} 项`;
+    badge.textContent = sourceBadgeText(`复核未通过 · ${res.verification.failCount} 项`);
     badge.className = 'badge bad';
   } else {
-    badge.textContent = '复核通过，可导出';
+    badge.textContent = sourceBadgeText('复核通过，可导出');
     badge.className = 'badge ok';
   }
   renderShuffle();
+}
+
+function sourceBadgeText(base) {
+  return state.canvasSource ? `${base} · 来源：产品画布「${state.canvasSource.name}」` : base;
 }
 
 function renderVerify(res) {
@@ -695,7 +739,8 @@ function doExport() {
   const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `toolpath-${state.scenarioId}-D${fresh.params.toolDiameter}.cnc.txt`;
+  const fileBase = state.canvasSource ? 'canvas-object' : state.scenarioId;
+  a.download = `toolpath-${fileBase}-D${fresh.params.toolDiameter}.cnc.txt`;
   a.click();
   URL.revokeObjectURL(a.href);
   toast(`已导出 ${fresh.segments.length} 段；切割 ${fresh.totals.cut.toFixed(2)} mm，空移 ${fresh.totals.rapid.toFixed(2)} mm`, 'ok');
@@ -730,7 +775,10 @@ function init() {
     o.value = sc.id; o.textContent = sc.name;
     sel.appendChild(o);
   }
-  sel.onchange = () => loadScenario(sel.value);
+  sel.onchange = () => {
+    // 切回任一预置场景：画布输入项由 loadScenario 移除
+    if (sel.value !== CanvasInput.CANVAS_SOURCE_ID) loadScenario(sel.value);
+  };
   $('btn-fit').onclick = fitView;
   $('btn-add-start-region').onclick = () => addZone('start-region');
   $('btn-add-no-cross').onclick = () => addZone('no-cross');
@@ -758,7 +806,17 @@ function init() {
     });
   });
 
-  loadScenario('two-holes');
+  // 优先读取产品画布选中对象进入时携带的轮廓坐标；没有才回退到预置案例
+  const fromCanvas = CanvasInput.readCanvasLocation(typeof location !== 'undefined' ? location : null);
+  if (fromCanvas.ok) {
+    loadCanvasInput(fromCanvas);
+    syncScenarioSelect();
+  } else {
+    if (fromCanvas.error && fromCanvas.error !== '无产品画布参数' && fromCanvas.error !== '非浏览器环境') {
+      toast(`产品画布数据载入失败（${fromCanvas.error}），已显示预置案例`, 'bad');
+    }
+    loadScenario('two-holes');
+  }
   requestAnimationFrame(() => fitView());
   window.addEventListener('resize', () => { draw(); });
 }

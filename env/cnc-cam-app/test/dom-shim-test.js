@@ -8,6 +8,7 @@ const vm = require('vm');
 const pub = path.join(__dirname, '..', 'public');
 const camSrc = fs.readFileSync(path.join(pub, 'js', 'cam.js'), 'utf8');
 const scenariosSrc = fs.readFileSync(path.join(pub, 'js', 'scenarios.js'), 'utf8');
+const canvasInputSrc = fs.readFileSync(path.join(pub, 'js', 'canvas-input.js'), 'utf8');
 const appSrc = fs.readFileSync(path.join(pub, 'js', 'app.js'), 'utf8');
 
 function makeEl(id) {
@@ -105,12 +106,16 @@ run(camSrc, 'cam.js');
 sandbox.CAM = sandbox.window.CAM;
 run(scenariosSrc, 'scenarios.js');
 sandbox.SCENARIOS = sandbox.window.SCENARIOS;
+run(canvasInputSrc, 'canvas-input.js');
+sandbox.CanvasInput = sandbox.window.CanvasInput;
 
 // app.js 的 init 会在加载末尾运行；其内部 querySelectorAll('#toolbar ...') 必须返回参数输入框
 run(appSrc, 'app.js');
 
 const CAM = sandbox.CAM;
+const CanvasInput = sandbox.CanvasInput;
 if (!CAM) { console.error('CAM 未挂载到 window'); process.exit(1); }
+if (!CanvasInput) { console.error('CanvasInput 未挂载到 window'); process.exit(1); }
 
 // 直接通过 CAM 引擎对全部内置场景做端到端计算，验证页面数据面健全
 console.log('\n逐场景端到端计算：');
@@ -145,4 +150,37 @@ if (!u.verification.exportBlocked || /^G01 /m.test(txtU)) {
   throw new Error('窄槽失效场景必须阻止导出且无 G01');
 }
 console.log('\n  ✓ 窄槽失效场景导出被阻止且不含 G01');
+
+// 产品画布选中对象进入加工：模拟跳转 URL，验证解析→CAM 输入→端到端计算的数据链路
+console.log('\n产品画布对象进入加工链路：');
+{
+  const geom = [
+    [
+      [[0, 0], [100, 0], [100, 80], [0, 80]],
+      [[20, 20], [40, 20], [40, 40], [20, 40]],
+    ],
+  ];
+  const enc = encodeURIComponent(JSON.stringify({ version: 1, name: '画布零件A', geom }));
+  const parsed = CanvasInput.readCanvasLocation({ search: '', hash: `#canvas=${enc}` });
+  if (!parsed.ok) throw new Error(`画布载荷解析失败：${parsed.error}`);
+  if (parsed.input.rings.length !== 2) throw new Error('应转换出外环+洞两个环');
+  const res = CAM.computeToolpath({
+    rings: parsed.input.rings, zones: [], home: parsed.input.home,
+    params: { toolDiameter: 4, leadLength: 6, bridgeCount: 2, bridgeWidth: 3,
+      bridgeCornerClear: 4, bridgeLeadGuard: 5 },
+  });
+  for (const s of res.segments) {
+    if (!s.no || !s.type || !s.points || s.length == null || !s.ringName) {
+      throw new Error('画布对象加工段字段不完整');
+    }
+  }
+  const txt = CAM.exportToolpathText(res, { fingerprint: 'shim-canvas' });
+  console.log(`  · 对象「${parsed.name}」段数=${res.segments.length} 次序=${res.sequenceIds.length} 复核=${res.verification.exportBlocked ? '阻止' : '通过'} 导出${txt.length}字节`);
+}
+// 损坏载荷：返回 ok:false（页面会 toast 并回退预置案例，不抛异常）
+{
+  const bad = CanvasInput.readCanvasLocation({ search: '?canvas=%E0%A4%A', hash: '' });
+  if (bad.ok) throw new Error('损坏载荷不应解析成功');
+}
+
 console.log('\nDOM 桩端到端：页面初始化与全部场景渲染数据路径无运行时错误 ✓');

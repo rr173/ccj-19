@@ -4,6 +4,7 @@
 
 const assert = require('assert');
 const CAM = require('../public/js/cam.js');
+const CanvasInput = require('../public/js/canvas-input.js');
 const V = CAM.V;
 
 let passed = 0;
@@ -561,6 +562,104 @@ test('每个段携带编号/类型/起终点/长度/所属轮廓，可逐段核�
     assert.ok(V.eq(s.to, s.points[s.points.length - 1]));
   }
   assert.strictEqual(res.segments[0].no, 1);
+});
+
+/* --------------------- 产品画布选中对象 → 加工输入 --------------------- */
+
+console.log('\n[11] 产品画布对象进入加工（读取进入时的轮廓坐标）');
+
+test('产品画布几何转为 CAM rings：y 轴翻转、外/洞标记、HOME 在轮廓外', () => {
+  // 画布坐标 y 向下；一个带洞多边形（外环 + 1 洞）
+  const geom = [
+    [
+      [[0, 0], [100, 0], [100, 80], [0, 80]],          // 外环
+      [[20, 20], [35, 20], [35, 35], [20, 35]],        // 洞
+    ],
+  ];
+  const parsed = CanvasInput.parseCanvasPayload(JSON.stringify({ version: 1, name: '板件', geom }));
+  assert.ok(parsed.ok, parsed.error);
+  assert.strictEqual(parsed.input.rings.length, 2);
+  const outer = parsed.input.rings.find((r) => r.kind === 'outer');
+  const hole = parsed.input.rings.find((r) => r.kind === 'hole');
+  assert.ok(outer && hole);
+  // y 翻转：画布 (100,80)（右下）→ CAM (100,-80)
+  assert.deepStrictEqual(outer.points.map((p) => [p.x, p.y]),
+    [[0, -0], [100, -0], [100, -80], [0, -80]]);
+  assert.strictEqual(hole.name, '对象1·洞1');
+  // HOME 在整体包围盒之外（左下）
+  assert.ok(parsed.input.home.x < 0 && parsed.input.home.y < -80);
+  // CAM 引擎按包含深度复核：洞仍判为 hole，且先于外环加工
+  const res = CAM.computeToolpath({
+    ...parsed.input,
+    params: { ...baseParams, toolDiameter: 4 },
+  });
+  const normHole = res.rings.find((r) => r.name === '对象1·洞1');
+  assert.strictEqual(normHole.kind, 'hole');
+  assert.strictEqual(res.sequenceIds[0], normHole.id);
+});
+
+test('对象被移动/缩放/调整顶点后再次进入：载荷携带更新后的坐标而非预置案例', () => {
+  const mk = (geom) => CanvasInput.parseCanvasPayload(JSON.stringify({ version: 1, name: '零件', geom }));
+  // 第一次进入：100×80 矩形位于画布原点
+  const first = mk([[[[0, 0], [100, 0], [100, 80], [0, 80]]]]);
+  assert.ok(first.ok);
+  // 用户在画布上把对象平移 (50, -30)（画布坐标）后再次进入
+  const moved = mk([[[[50, -30], [150, -30], [150, 50], [50, 50]]]]);
+  assert.ok(moved.ok);
+  const p0 = moved.input.rings[0].points[0];
+  assert.ok(V.eq(p0, { x: 50, y: 30 }), `平移后首点应为 (50,30)，实际 (${p0.x},${p0.y})`);
+  assert.ok(!CAM.V.eq(moved.input.rings[0].points[0], first.input.rings[0].points[0]));
+  // 缩放到 40×20
+  const scaled = mk([[[[0, 0], [40, 0], [40, 20], [0, 20]]]]);
+  assert.ok(scaled.ok);
+  const bb = CanvasInput.ringsBBox(scaled.input.rings);
+  assert.ok(Math.abs(bb.maxX - 40) < 1e-9 && Math.abs(bb.minY + 20) < 1e-9);
+  // 拖动顶点把矩形改成三角形：顶点数与新坐标立即生效
+  const reshaped = mk([[[[0, 0], [120, 0], [60, 90]]]]);
+  assert.ok(reshaped.ok);
+  assert.strictEqual(reshaped.input.rings[0].points.length, 3);
+  assert.deepStrictEqual(reshaped.input.rings[0].points.map((p) => [p.x, p.y]),
+    [[0, -0], [120, -0], [60, -90]]);
+});
+
+test('URL query/hash 解析往返：encode 后 parse 还原', () => {
+  const geom = [[[[10, 10], [30, 10], [30, 25], [10, 25]]]];
+  const enc = encodeURIComponent(JSON.stringify({ version: 1, name: '小块', geom }));
+  const viaQuery = CanvasInput.parseCanvasQuery(`foo=1&canvas=${enc}&bar=2`);
+  const viaHash = CanvasInput.parseCanvasQuery(`canvas=${enc}`);
+  assert.ok(viaQuery.ok && viaHash.ok);
+  assert.strictEqual(viaQuery.input.rings[0].points[2].x, 30);
+  // 直接从 location 读取（query 优先）
+  const fromLoc = CanvasInput.readCanvasLocation({ search: `?canvas=${enc}`, hash: '' });
+  assert.ok(fromLoc.ok);
+  const fromHash = CanvasInput.readCanvasLocation({ search: '', hash: `#canvas=${enc}` });
+  assert.ok(fromHash.ok);
+  const none = CanvasInput.readCanvasLocation({ search: '', hash: '' });
+  assert.ok(!none.ok);
+});
+
+test('非法/空载荷被拒绝并给出原因（调用方回退预置案例）', () => {
+  assert.ok(!CanvasInput.parseCanvasPayload('').ok);
+  assert.ok(!CanvasInput.parseCanvasPayload('not-json').ok);
+  assert.ok(!CanvasInput.parseCanvasPayload(JSON.stringify({ version: 1, geom: [] })).ok);
+  assert.ok(!CanvasInput.parseCanvasPayload(JSON.stringify({
+    version: 1, geom: [[[[0, 0], [10, 0]]]], // 环只有 2 个点
+  })).ok);
+  assert.ok(!CanvasInput.parseCanvasPayload(JSON.stringify({
+    version: 1, geom: [[[[0, 0], [10, 'x'], [0, 10]]]], // 非数字顶点
+  })).ok);
+  // 编码损坏（非法百分号转义）不得抛异常
+  assert.ok(!CanvasInput.parseCanvasQuery('canvas=%E0%A4%A').ok);
+});
+
+test('产品画布对象端到端通过 CAM：生成段、可导出', () => {
+  const geom = [[[[0, 0], [60, 0], [60, 40], [0, 40]]]];
+  const parsed = CanvasInput.parseCanvasPayload(JSON.stringify({ version: 1, name: '单零件', geom }));
+  const res = CAM.computeToolpath({ ...parsed.input, params: { ...baseParams, toolDiameter: 4 } });
+  assert.ok(res.segments.length > 0);
+  assert.ok(res.rings.every((r) => !r.offsetError && !r.leadError && !r.rapidError));
+  const txt = CAM.exportToolpathText(res, { fingerprint: 'canvas-test' });
+  assert.ok(/G01 /m.test(txt));
 });
 
 /* ----------------------------- 汇总 ----------------------------- */
